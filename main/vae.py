@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .common import MNIST_IMAGE_SHAPE
+from .flow import make_flow_model
 
 
 class Encoder(hk.Module):
@@ -35,6 +36,10 @@ class Encoder(hk.Module):
 
     def __call__(self, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
         x = hk.Flatten()(x)
+        x = hk.Linear(self._hidden_size)(x)
+        x = jax.nn.relu(x)
+        x = hk.Linear(self._hidden_size)(x)
+        x = jax.nn.relu(x)
         x = hk.Linear(self._hidden_size)(x)
         x = jax.nn.relu(x)
 
@@ -60,6 +65,10 @@ class Decoder(hk.Module):
     def __call__(self, z: jnp.ndarray) -> jnp.ndarray:
         z = hk.Linear(self._hidden_size)(z)
         z = jax.nn.relu(z)
+        z = hk.Linear(self._hidden_size)(z)
+        z = jax.nn.relu(z)
+        z = hk.Linear(self._hidden_size)(z)
+        z = jax.nn.relu(z)
 
         logits = hk.Linear(np.prod(self._output_shape))(z)
         logits = jnp.reshape(logits, (-1, *self._output_shape))
@@ -70,7 +79,6 @@ class Decoder(hk.Module):
 class VAEOutput(NamedTuple):
     variational_distrib: distrax.Distribution
     likelihood_distrib: distrax.Distribution
-    z: jnp.ndarray
 
 
 class VAE(hk.Module):
@@ -80,12 +88,21 @@ class VAE(hk.Module):
         self,
         latent_size: int,
         hidden_size: int,
+        flow_num_layers: int,
+        flow_mlp_hidden_sizes: Sequence[int],
+        flow_num_bins: int,
         output_shape: Sequence[int] = MNIST_IMAGE_SHAPE,
     ):
         super().__init__()
         self._latent_size = latent_size
         self._hidden_size = hidden_size
         self._output_shape = output_shape
+        self.bijector = make_flow_model(
+            event_shape=(latent_size,),
+            num_layers=flow_num_layers,
+            hidden_sizes=flow_mlp_hidden_sizes,
+            num_bins=flow_num_bins
+        )
 
     def __call__(self, x: jnp.ndarray) -> VAEOutput:
         x = x.astype(jnp.float32)
@@ -96,15 +113,16 @@ class VAE(hk.Module):
             loc=mean, scale_diag=stddev
         )
         z = variational_distrib.sample(seed=hk.next_rng_key())
+        z_k = self.bijector.forward(z)
 
         # p(x|z) = \Prod Bernoulli(logits(z))
-        logits = Decoder(self._hidden_size, self._output_shape)(z)
+        logits = Decoder(self._hidden_size, self._output_shape)(z_k)
         likelihood_distrib = distrax.Independent(
             distrax.Bernoulli(logits=logits),
             reinterpreted_batch_ndims=len(self._output_shape),
         )  # 3 non-batch dims
 
-        return VAEOutput(variational_distrib, likelihood_distrib, z)
+        return VAEOutput(variational_distrib, likelihood_distrib)
 
     def sample(self, z: jnp.ndarray) -> jnp.ndarray:
         # p(x|z) = \Prod Bernoulli(logits(z))

@@ -27,7 +27,6 @@ import matplotlib.pyplot as plt
 from absl import app, flags, logging
 
 from .vae import VAE, VAEOutput
-from .flow import make_flow_model
 
 
 flags.DEFINE_float("beta", 1, "Hyperparameter beta as in beta-VAE")
@@ -68,7 +67,13 @@ def load_dataset(split: str, batch_size: int) -> Iterator[Batch]:
 
 
 def vae_fn():
-    model = VAE(FLAGS.latent_size, FLAGS.vae_hidden_size)
+    model = VAE(
+        latent_size=FLAGS.latent_size,
+        hidden_size=FLAGS.vae_hidden_size,
+        flow_num_layers=FLAGS.flow_num_layers,
+        flow_mlp_hidden_sizes=[FLAGS.mlp_hidden_size] * FLAGS.mlp_num_layers,
+        flow_num_bins=FLAGS.num_bins
+    )
 
     def init(x, z):
         forward(x)
@@ -83,53 +88,17 @@ def vae_fn():
     return init, (forward, sample)
 
 
-def flow_fn():
-    event_shape = (FLAGS.latent_size,)
-
-    bijector = make_flow_model(
-        event_shape=event_shape,
-        num_layers=FLAGS.flow_num_layers,
-        hidden_sizes=[FLAGS.mlp_hidden_size] * FLAGS.mlp_num_layers,
-        num_bins=FLAGS.num_bins
-    )
-    base_distribution = distrax.MultivariateNormalDiag(
-        loc=jnp.zeros(event_shape),
-        scale_diag=jnp.ones(event_shape)
-    )
-    transformed = distrax.Transformed(base_distribution, bijector)
-
-    def init(z, epsilon):
-        log_prob(z)
-        transform(epsilon)
-
-    def log_prob(z: jnp.ndarray) -> jnp.ndarray:
-        return transformed.log_prob(z)
-
-    def transform(epsilon: jnp.ndarray) -> jnp.ndarray:
-        return distrax.Inverse(bijector).forward(epsilon)
-
-    return init, (log_prob, transform)
-
-
 def main(_):
     vae = hk.multi_transform(vae_fn)
-    flow =  hk.multi_transform(flow_fn)
 
     forward, sample = vae.apply
-    log_prob, transform = flow.apply
     rng_seq = hk.PRNGSequence(42)
 
-    vae_params = vae.init(
+    params = vae.init(
         next(rng_seq),
         jnp.empty((1, *MNIST_IMAGE_SHAPE)),
         jnp.empty((1, FLAGS.latent_size)),
     )
-    flow_params = flow.init(
-        next(rng_seq),
-        jnp.empty((1, FLAGS.latent_size)),
-        jnp.empty((1, FLAGS.latent_size)),
-    )
-    params = hk.data_structures.merge(vae_params, flow_params, check_duplicates=True)
 
     optimizer = optax.adam(FLAGS.learning_rate)
     opt_state = optimizer.init(params)
@@ -147,7 +116,6 @@ def main(_):
             scale_diag=jnp.ones((FLAGS.latent_size,)),
         )
         kl = outputs.variational_distrib.kl_divergence(prior_z)
-        kl -= log_prob(params, None, outputs.z)
 
         elbo = log_likelihood - FLAGS.beta * kl
 
@@ -167,14 +135,13 @@ def main(_):
         return new_params, new_opt_state
 
     @jax.jit
-    def generate(params: hk.Params, rng_key_epsilon: PRNGKey, rng_key_x: PRNGKey) -> jnp.ndarray:
+    def generate(params: hk.Params, rng_key_z: PRNGKey, rng_key_x: PRNGKey) -> jnp.ndarray:
         """Generate sample."""
-        prior_epsilon = distrax.MultivariateNormalDiag(
+        prior_z = distrax.MultivariateNormalDiag(
             loc=jnp.zeros((FLAGS.latent_size,)),
             scale_diag=jnp.ones((FLAGS.latent_size,)),
         )
-        epsilon = prior_epsilon.sample(seed=rng_key_epsilon)
-        z = transform(params, None, epsilon)
+        z = prior_z.sample(seed=rng_key_z)
         image = sample(params, rng_key_x, z)
         return image
 
@@ -196,9 +163,9 @@ def main(_):
             image = generate(params, next(rng_seq), next(rng_seq))
             image = image.reshape(MNIST_IMAGE_SHAPE[:-1])
             axes[i, j].imshow(image, cmap="gray")
+            plt.axis("off")
+            plt.tight_layout()
 
-    plt.axis("off")
-    plt.tight_layout()
     fig.savefig("figures/generated.png")
 
 
