@@ -70,14 +70,15 @@ def make_flow_model(
     for _ in range(num_layers):
         layer = distrax.MaskedCoupling(
             mask=mask,
+            bijector=bijector_fn,
             conditioner=make_conditioner(
                 event_shape, hidden_sizes, num_bijector_params
             ),
-            bijector=bijector_fn,
         )
         layers.append(layer)
         # Flip the mask after each layer.
         mask = jnp.logical_not(mask)
 
-    flow = distrax.Chain(layers)
+    # We invert the flow so that the `forward` method is called with `log_prob`.
+    flow = distrax.Inverse(distrax.Chain(layers))
     return flow
