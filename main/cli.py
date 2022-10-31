@@ -141,15 +141,10 @@ def main(_):
         outputs: VAEOutput = forward(params, rng_key, batch["image"])
         log_likelihood = outputs.likelihood_distrib.log_prob(batch["image"])
 
-        # p(epsilon) = N(0, I)
-        prior_z = distrax.MultivariateNormalDiag(
-            loc=jnp.zeros((FLAGS.latent_size,)),
-            scale_diag=jnp.ones((FLAGS.latent_size,)),
-        )
-        kl = outputs.variational_distrib.kl_divergence(prior_z)
-        kl -= log_prob(params, None, outputs.z)
+        llk_p = outputs.variational_distrib.log_prob(outputs.z)
+        llk_q = log_prob(params, None, outputs.z)
 
-        elbo = log_likelihood - FLAGS.beta * kl
+        elbo = log_likelihood - FLAGS.beta * (llk_p - llk_q)
 
         return -jnp.mean(elbo)
 
