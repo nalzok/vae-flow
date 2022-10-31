@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+numpy = "*"
+jax = {extras = ["tpu"]}
+dm-haiku = "*"
+distrax = "*"
+optax = "*"
+tensorflow_datasets = "*"
+tensorflow-cpu = "*"
+absl-py = "*"
+pillow = "*"
+matplotlib = "*"
+
+[dev-packages]
+black = "*"
+
+[requires]
+python_version = "3.8"
